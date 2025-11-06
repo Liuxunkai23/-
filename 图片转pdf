@@ -3,17 +3,10 @@
 将文件夹内的图片按修改时间顺序合并为一个 PDF 并保存到桌面。
 
 用法示例：
-	python 图片转pdf.py -i "C:/Users/you/Pictures/album" -o out.pdf --order asc
+python "d:\Python\ceshipy\图片转pdf.py" -i "C:/Users/you/Pictures/album"
 
 依赖：
 	pip install pillow
-
-功能：
- - 支持常见图片格式：jpg, jpeg, png, bmp, gif, tiff
- - 默认读取脚本当前目录（或可通过 -i 指定），按修改时间升序（asc）或降序（desc）排序
- - 输出文件默认放在当前用户桌面，文件名可通过 -o 指定
- - 会把 RGBA 图像转换为 RGB（以白色背景去除透明度）
-"""
 
 import argparse
 import os
