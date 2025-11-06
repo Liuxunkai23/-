@@ -1,0 +1,17 @@
+# Word转PDF脚本
+# 需要先安装docx2pdf: pip install docx2pdf
+from docx2pdf import convert
+import os
+
+def main():
+    input_path = input("请输入Word文档路径: ").strip('"')
+    output_path = os.path.splitext(input_path)[0] + ".pdf"
+    print(f"输出PDF路径: {output_path}")
+    if not os.path.isfile(input_path):
+        print("文件不存在！")
+        return
+    convert(input_path, output_path)
+    print(f"转换完成，PDF已保存为: {output_path}")
+
+if __name__ == "__main__":
+    main()
