@@ -1,0 +1,302 @@
+"""
+将输入的 PPT 文件每 6 页合并成新的一页并输出
+将输入的 PPT 或 PDF 文件每 6 页合并成新的一页并输出
+- 依赖：Windows + PowerPoint（仅在使用 PowerPoint COM 时需要），以及以下 Python 包：
+    pip install pywin32 python-pptx Pillow comtypes pymupdf
+    注意：如果只处理 PDF，推荐安装 pymupdf (aka fitz)，它不依赖外部工具；若使用 PowerPoint COM，需在 Windows 上安装 PowerPoint。
+- 原理：
+    - 对于 PPTX/PPT：可使用 PowerPoint COM 直接复制并粘贴为图片到新幻灯片（更快、保真）；或先将幻灯片导出为图片，再用 python-pptx 重新排版。
+    - 对于 PDF：使用 PyMuPDF 将每页导出为图片，然后用 python-pptx 新建幻灯片，把每6张图片按 2 列 × 3 行 排列到一页上。
+ - 使用：在 PowerShell 中运行 python 课件打印页面转化.py，然后按提示输入 PPT 或 PDF 路径或直接拖入路径。
+"""
+
+
+try:
+        import fitz  # PyMuPDF
+except Exception:
+        fitz = None
+import os
+import sys
+import tempfile
+from pathlib import Path
+from pptx import Presentation
+from pptx.util import Inches
+from PIL import Image
+
+
+def export_slides_to_images(ppt_path, out_dir):
+    """使用 PowerPoint COM 导出每张幻灯片为 PNG。仅在 Windows 并安装 PowerPoint 时可用。"""
+    try:
+        import comtypes.client
+    except Exception as e:
+        raise RuntimeError("需要 comtypes 库（pip install comtypes），并在 Windows 上运行且安装了 PowerPoint") from e
+    powerpoint = comtypes.client.CreateObject("Powerpoint.Application")
+    # 为避免部分 PowerPoint 版本在后台自动化时报错，显示窗口并关闭提示
+    powerpoint.Visible = 1
+    try:
+        powerpoint.DisplayAlerts = 0
+    except Exception:
+        pass
+
+    # 确保输出目录存在
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    presentation = None
+    try:
+        # 参数顺序 (FileName, ReadOnly, Untitled, WithWindow)
+        presentation = powerpoint.Presentations.Open(str(ppt_path), 0, 0, 0)
+
+        images = []
+        # 逐张幻灯片导出为 PNG
+        slides = presentation.Slides
+        count = slides.Count
+        for i in range(1, count + 1):
+            slide = slides.Item(i)
+            out_file = out_dir / f"slide_{i:03d}.png"
+            # Slide.Export(path, Filter, ScaleWidth=None, ScaleHeight=None)
+            slide.Export(str(out_file), 'PNG')
+            images.append(out_file)
+
+        return images
+    finally:
+        try:
+            if presentation is not None:
+                presentation.Close()
+        except Exception:
+            pass
+        try:
+            powerpoint.Quit()
+        except Exception:
+            pass
+
+
+def create_merged_ppt(images, output_ppt_path):
+    """将每6张图片合并为新的一页（2列×3行）并保存为 PPTX。"""
+    prs = Presentation()
+    # 设置幻灯片大小为默认（10" x 7.5"），可以根据需要调整
+    slide_width = prs.slide_width
+    slide_height = prs.slide_height
+
+    # 布局：2列 × 3行
+    cols = 2
+    rows = 3
+    h_gap = Inches(0.2)
+    v_gap = Inches(0.2)
+
+    # 计算每张图片占位大小
+    img_width = (slide_width - (cols + 1) * h_gap) / cols
+    img_height = (slide_height - (rows + 1) * v_gap) / rows
+
+    def add_page(img_group):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+        for idx, img_path in enumerate(img_group):
+            col = idx % cols
+            row = idx // cols
+            left = h_gap + col * (img_width + h_gap)
+            top = v_gap + row * (img_height + v_gap)
+
+            # 调整图片尺寸以适应框但保持纵横比
+            try:
+                with Image.open(img_path) as im:
+                    w, h = im.size
+                    # pptx 以 EMU 单位，使用宽高对比来确定最终显示大小
+                    # 先计算目标的宽高，保持比例
+                    ratio = min(float(img_width) / w, float(img_height) / h)
+                    target_w = int(w * ratio)
+                    target_h = int(h * ratio)
+            except Exception:
+                target_w = int(img_width)
+                target_h = int(img_height)
+
+            # 将图片添加到幻灯片
+            slide.shapes.add_picture(str(img_path), left, top, width=target_w, height=target_h)
+
+    # 将图片按每6张分组
+    chunk_size = cols * rows
+    for i in range(0, len(images), chunk_size):
+        group = images[i:i + chunk_size]
+        add_page(group)
+
+    prs.save(str(output_ppt_path))
+
+
+def export_pdf_to_images(pdf_path, out_dir, zoom=2):
+    """使用 PyMuPDF 将 PDF 每页导出为 PNG 图像并返回图片路径列表。
+    zoom: 渲染缩放倍数，默认2以获得较好清晰度。
+    """
+    if fitz is None:
+        raise RuntimeError("未检测到 PyMuPDF (pymupdf)。请运行: pip install pymupdf")
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    doc = fitz.open(str(pdf_path))
+    images = []
+    mat = fitz.Matrix(zoom, zoom)
+    for i in range(len(doc)):
+        page = doc.load_page(i)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        out_file = out_dir / f"page_{i+1:03d}.png"
+        pix.save(str(out_file))
+        images.append(out_file)
+
+    doc.close()
+    return images
+
+
+def merge_slides_via_com(ppt_path, output_ppt_path, portrait=False):
+    """直接使用 PowerPoint COM 将每6张幻灯片复制粘贴为图片到新的 PPT 页面上（不保存临时图片）。"""
+    try:
+        import comtypes.client
+    except Exception as e:
+        raise RuntimeError("需要 comtypes 库（pip install comtypes），并在 Windows 上运行且安装了 PowerPoint") from e
+
+    powerpoint = comtypes.client.CreateObject("Powerpoint.Application")
+    # 显示 PowerPoint 窗口以避免后台隐藏时报错；关闭提示框
+    powerpoint.Visible = 1
+    try:
+        powerpoint.DisplayAlerts = 0
+    except Exception:
+        pass
+
+    src_pres = None
+    dst_pres = None
+    try:
+        src_pres = powerpoint.Presentations.Open(str(ppt_path), 0, 0, 0)
+        dst_pres = powerpoint.Presentations.Add()
+
+        # 如果需要竖版，设置目标页面为竖版尺寸（宽 x 高 in points）
+        # 使用 7.5" x 10" 作为竖版默认尺寸（1 inch = 72 points）
+        if portrait:
+            try:
+                dst_pres.PageSetup.SlideWidth = int(7.5 * 72)
+                dst_pres.PageSetup.SlideHeight = int(10 * 72)
+            except Exception:
+                pass
+
+        slides = src_pres.Slides
+        count = slides.Count
+
+        cols = 2
+        rows = 3
+        margin = 36  # points (~0.5 inch)
+
+        slide_width = dst_pres.PageSetup.SlideWidth
+        slide_height = dst_pres.PageSetup.SlideHeight
+
+        target_w = (slide_width - (cols + 1) * margin) / cols
+        target_h = (slide_height - (rows + 1) * margin) / rows
+
+        def add_merged_slide(group_indexes):
+            # 添加空白幻灯片，布局 12 通常为空白
+            slide = dst_pres.Slides.Add(dst_pres.Slides.Count + 1, 12)
+            for idx, slide_index in enumerate(group_indexes):
+                src_slide = slides.Item(slide_index)
+                # 复制源幻灯片到剪贴板
+                src_slide.Copy()
+                # 将其作为图片粘贴到目标幻灯片
+                shapes = slide.Shapes.PasteSpecial(2)  # 2 = ppPasteEnhancedMetafile
+                # shapes 是一个 ShapeRange，取第一个
+                shape = shapes.Item(1)
+                # 计算位置
+                col = idx % cols
+                row = idx // cols
+                left = margin + col * (target_w + margin)
+                top = margin + row * (target_h + margin)
+
+                # 调整大小并位置
+                try:
+                    shape.LockAspectRatio = False
+                except Exception:
+                    pass
+                shape.Width = target_w
+                shape.Height = target_h
+                shape.Left = left
+                shape.Top = top
+
+        # 分组每6张
+        group_size = cols * rows
+        i = 1
+        while i <= count:
+            group = list(range(i, min(i + group_size, count + 1)))
+            add_merged_slide(group)
+            i += group_size
+
+        # 保存目标文件
+        dst_pres.SaveAs(str(output_ppt_path))
+    finally:
+        try:
+            if src_pres is not None:
+                src_pres.Close()
+        except Exception:
+            pass
+        try:
+            if dst_pres is not None:
+                dst_pres.Close()
+        except Exception:
+            pass
+        try:
+            powerpoint.Quit()
+        except Exception:
+            pass
+
+
+def main():
+    ppt_path = input("请输入PPT或PDF文件路径: ").strip('"')
+    if not ppt_path:
+        print("未输入文件路径，退出。")
+        return
+    ppt_path = Path(ppt_path)
+    if not ppt_path.is_file():
+        print("文件不存在：", ppt_path)
+        return
+    try:
+        output_ppt = ppt_path.with_name(ppt_path.stem + "_merged.pptx")
+        ans = input("是否使用竖版页面（纵向）？(y/N): ").strip().lower()
+        portrait = ans == 'y' or ans == 'yes'
+        # 如果是 PDF，使用 PyMuPDF 将每页导出为图片，再用 python-pptx 合并
+        if ppt_path.suffix.lower() == '.pdf':
+            print("检测到 PDF 输入，正在把 PDF 页导出为图片并生成合并 PPTX...")
+            tmpdir = tempfile.mkdtemp(prefix="pdf_pages_")
+            try:
+                images = export_pdf_to_images(ppt_path, tmpdir)
+                if not images:
+                    print("没有导出任何页面，可能是空 PDF。")
+                    return
+                create_merged_ppt(images, output_ppt)
+                print("合并完成，输出文件:", output_ppt)
+            finally:
+                # 不自动删除临时目录，便于用户检查输出；如需删除可启用下面代码。
+                # import shutil; shutil.rmtree(tmpdir)
+                pass
+        else:
+            # 对于 PPT 文件，优先使用 PowerPoint COM 快速合并；若失败则回退到导出图片再合并
+            try:
+                print("使用 PowerPoint COM 直接合并（需要 PowerPoint）...")
+                merge_slides_via_com(ppt_path, output_ppt, portrait=portrait)
+                print("合并完成，输出文件:", output_ppt)
+            except Exception as e:
+                print("PowerPoint COM 合并失败，尝试导出为图片并使用 python-pptx 合并。错误：", e)
+                tmpdir = tempfile.mkdtemp(prefix="ppt_pages_")
+                try:
+                    images = export_slides_to_images(ppt_path, tmpdir)
+                    if not images:
+                        print("未能导出任何幻灯片图片。")
+                        return
+                    create_merged_ppt(images, output_ppt)
+                    print("合并完成（通过图片导出），输出文件:", output_ppt)
+                finally:
+                    # 如需清理临时文件，可取消下一行注释
+                    # import shutil; shutil.rmtree(tmpdir)
+                    pass
+    except Exception as e:
+        print("发生错误:", e)
+
+
+if __name__ == '__main__':
+    main()
+
+
+if __name__ == '__main__':
+    main()
